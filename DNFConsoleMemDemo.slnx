@@ -1,3 +1,5 @@
 <Solution>
-  <Project Path="DNFConsoleMemDemo.csproj" Id="7e2c3d2e-0af7-4255-b335-cadf33f7c8d8" />
+  <Project Path="DNFConsoleMemDemo.csproj" Id="7e2c3d2e-0af7-4255-b335-cadf33f7c8d8">
+    <BuildType Solution="Debug|*" Project="AnyCPU_Prefer32" />
+  </Project>
 </Solution>

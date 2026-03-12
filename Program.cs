@@ -13,6 +13,7 @@ namespace DNFConsoleMemDemo
 
         static void Main(string[] args)
         {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
             Console.Title = "DNF 4.8 Memory Allocation Limits Demo";
             PrintBanner();
             PrintEnvironmentInfo();
@@ -234,11 +235,11 @@ namespace DNFConsoleMemDemo
 
   KEY TAKEAWAY
   ────────────
-  • ""Prefer 32-bit"" is the Visual Studio DEFAULT for new console apps.
+  👉 ""Prefer 32-bit"" is the Visual Studio DEFAULT for new console apps.
     It forces 32-bit execution even on a 64-bit OS, capping the heap.
-  • OutOfMemoryException is thrown while the machine still has GIGABYTES
+  👉 OutOfMemoryException is thrown while the machine still has GIGABYTES
     of free physical RAM — the process simply cannot address more.
-  • To unlock full memory, either:
+  👉 To unlock full memory, either:
       1. Uncheck ""Prefer 32-bit"" in Project Properties → Build, or
       2. Set Platform Target to x64 explicitly.
 ");
@@ -273,7 +274,7 @@ namespace DNFConsoleMemDemo
         static void RunTest(string name, Func<string> test)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write($"  ▸ {name}");
+            Console.Write($"  🧪 {name}");
             Console.ResetColor();
             Console.Write(" ... ");
 
@@ -348,11 +349,11 @@ namespace DNFConsoleMemDemo
 
             Console.ForegroundColor = ConsoleColor.White;
             if (Environment.Is64BitProcess)
-                Console.WriteLine("\n  ★ Running as 64-BIT process — full address space available.");
+                Console.WriteLine("\n  ⭐ Running as 64-BIT process — full address space available.");
             else if (Environment.Is64BitOperatingSystem)
-                Console.WriteLine("\n  ⚠ Running as 32-BIT process on 64-bit OS — heap capped at ~1.5 GB!");
+                Console.WriteLine("\n  ⚠️ Running as 32-BIT process on 64-bit OS — heap capped at ~1.5 GB!");
             else
-                Console.WriteLine("\n  ⚠ Running as 32-BIT process on 32-bit OS — heap capped at ~1.5 GB!");
+                Console.WriteLine("\n  ⚠️ Running as 32-BIT process on 32-bit OS — heap capped at ~1.5 GB!");
             Console.ResetColor();
         }
 
