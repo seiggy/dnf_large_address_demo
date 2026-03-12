@@ -1,13 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Management;
 using System.Runtime.InteropServices;
 
 namespace DNFConsoleMemDemo
 {
     internal class Program
     {
+        // 8 GB cap — enough to prove we've blown past the 2 GB 32-bit ceiling
+        // without consuming every byte of RAM + page file on the machine.
+        const long MaxAllocationBytes = 8L * 1024 * 1024 * 1024;
+
         static void Main(string[] args)
         {
             Console.Title = "DNF 4.8 Memory Allocation Limits Demo";
@@ -16,18 +19,18 @@ namespace DNFConsoleMemDemo
 
             Console.WriteLine();
             PrintSection("MEMORY ALLOCATION TESTS");
-            Console.WriteLine("  Each test allocates until OutOfMemoryException is thrown.");
-            Console.WriteLine("  This reveals the effective heap ceiling for the current platform target.");
+            Console.WriteLine($"  Each test allocates up to {FormatBytes(MaxAllocationBytes)} (or until OOM).");
+            Console.WriteLine("  This proves a 64-bit process can blow past the 2 GB 32-bit ceiling.");
             Console.WriteLine();
 
             // ── Test 1: Single contiguous byte[] ────────────────────────
             // This probes the largest SINGLE contiguous allocation the CLR
-            // can satisfy. In 32-bit, virtual address fragmentation means
-            // this is well under the total addressable space.
+            // can satisfy.  .NET arrays are int-indexed, so the natural cap
+            // is ~2 GB regardless — but we also honour MaxAllocationBytes.
             RunTest("Single Contiguous byte[] (max array size)", () =>
             {
                 int low = 0;
-                int high = int.MaxValue; // .NET arrays are int-indexed
+                int high = (int)Math.Min(int.MaxValue, MaxAllocationBytes);
                 int maxSize = 0;
 
                 while (low <= high)
@@ -51,10 +54,9 @@ namespace DNFConsoleMemDemo
             });
 
             // ── Test 2: Many 64 MB chunks ───────────────────────────────
-            // Unlike Test 1, this accumulates MANY separate allocations.
-            // 32-bit processes can often allocate MORE total bytes this way
-            // because the GC scatters objects across fragmented VA space.
-            // The total may exceed the single-array limit above.
+            // Accumulates MANY separate allocations up to the 8 GB cap.
+            // 32-bit processes hit OOM well before this; 64-bit processes
+            // reach the cap, proving they can exceed the 2 GB ceiling.
             RunTest("List<byte[]> — Accumulate 64 MB Chunks", () =>
             {
                 const int chunkSize = 64 * 1024 * 1024;
@@ -63,7 +65,7 @@ namespace DNFConsoleMemDemo
 
                 try
                 {
-                    while (true)
+                    while (totalAllocated + chunkSize <= MaxAllocationBytes)
                     {
                         chunks.Add(new byte[chunkSize]);
                         totalAllocated += chunkSize;
@@ -82,7 +84,7 @@ namespace DNFConsoleMemDemo
 
             // ── Test 3: List<int> — single backing array growth ─────────
             // List<T> uses a SINGLE contiguous backing array that doubles
-            // in size. This hits the contiguous limit fast in 32-bit.
+            // in size. Stops at the 8 GB cap or OOM.
             RunTest("List<int> — Single Backing Array Growth", () =>
             {
                 var list = new List<int>();
@@ -92,10 +94,18 @@ namespace DNFConsoleMemDemo
                     while (true)
                     {
                         int batch = 50_000_000; // ~200 MB per batch
+                        long projectedBytes = ((long)list.Count + batch) * 4L;
+                        if (projectedBytes > MaxAllocationBytes)
+                        {
+                            int remaining = (int)((MaxAllocationBytes / 4L) - list.Count);
+                            if (remaining <= 0) break;
+                            batch = remaining;
+                        }
                         list.Capacity = list.Count + batch;
                         for (int i = 0; i < batch; i++)
                             list.Add(i);
                         count = list.Count;
+                        if (count * 4L >= MaxAllocationBytes) break;
                     }
                 }
                 catch (OutOfMemoryException)
@@ -113,9 +123,8 @@ namespace DNFConsoleMemDemo
 
             // ── Test 4: Dictionary<int,int> ─────────────────────────────
             // Dictionaries use several internal arrays (buckets + entries).
-            // Resizing requires allocating a new array before freeing the old,
-            // so OOM hits sooner than raw storage would suggest.
-            RunTest("Dictionary<int,int> — Grow Until OOM", () =>
+            // Stops at the 8 GB cap (estimated) or OOM.
+            RunTest("Dictionary<int,int> — Grow Until Cap/OOM", () =>
             {
                 var dict = new Dictionary<int, int>();
                 int count = 0;
@@ -123,6 +132,7 @@ namespace DNFConsoleMemDemo
                 {
                     while (true)
                     {
+                        if ((long)count * 24L >= MaxAllocationBytes) break;
                         dict.Add(count, count);
                         count++;
                     }
@@ -138,8 +148,7 @@ namespace DNFConsoleMemDemo
             });
 
             // ── Test 5: StringBuilder ────────────────────────────────────
-            // StringBuilder uses linked chunks internally. Each Append of
-            // a large string requires a contiguous char[] allocation.
+            // StringBuilder uses linked chunks internally. Stops at 8 GB cap.
             RunTest("StringBuilder — Append 10M-char Blocks", () =>
             {
                 var sb = new System.Text.StringBuilder();
@@ -149,6 +158,8 @@ namespace DNFConsoleMemDemo
                 {
                     while (true)
                     {
+                        long projectedBytes = (totalChars + chunk.Length) * 2L;
+                        if (projectedBytes > MaxAllocationBytes) break;
                         sb.Append(chunk);
                         totalChars += chunk.Length;
                     }
@@ -157,8 +168,6 @@ namespace DNFConsoleMemDemo
 
                 long bytesUsed = totalChars * 2L;
 
-                // Release the massive StringBuilder BEFORE allocating the
-                // result string — otherwise the format call itself throws OOM.
                 sb = null;
                 chunk = null;
                 GC.Collect();
@@ -177,7 +186,7 @@ namespace DNFConsoleMemDemo
                 long totalAllocated = 0;
                 try
                 {
-                    while (true)
+                    while (totalAllocated + itemSize <= MaxAllocationBytes)
                     {
                         queue.Enqueue(new byte[itemSize]);
                         totalAllocated += itemSize;
@@ -197,7 +206,10 @@ namespace DNFConsoleMemDemo
             // ── Summary tables ──────────────────────────────────────────
             Console.WriteLine();
             PrintSection("WHY THE NUMBERS DIFFER: CONTIGUOUS vs. FRAGMENTED");
-            Console.WriteLine(@"
+            Console.WriteLine($@"
+  All tests are capped at {FormatBytes(MaxAllocationBytes)} to avoid exhausting system resources.
+  32-bit builds will still hit OOM well before that cap.
+
   Tests 1, 3, 4 need a SINGLE large contiguous block and hit OOM sooner.
   Tests 2, 5, 6 scatter many small allocations — they can use fragmented
   address space regions the contiguous tests cannot reach.
@@ -299,8 +311,8 @@ namespace DNFConsoleMemDemo
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine(@"
   ╔═══════════════════════════════════════════════════════════════════╗
-  ║    .NET Framework 4.8 — Memory Allocation Limits Demo           ║
-  ║    Platform Target & Prefer 32-bit Flag Effects                 ║
+  ║    .NET Framework 4.8 — Memory Allocation Limits Demo             ║
+  ║    Platform Target & Prefer 32-bit Flag Effects                   ║
   ╚═══════════════════════════════════════════════════════════════════╝");
             Console.ResetColor();
         }
@@ -344,17 +356,29 @@ namespace DNFConsoleMemDemo
             Console.ResetColor();
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MEMORYSTATUSEX
+        {
+            public uint dwLength;
+            public uint dwMemoryLoad;
+            public ulong ullTotalPhys;
+            public ulong ullAvailPhys;
+            public ulong ullTotalPageFile;
+            public ulong ullAvailPageFile;
+            public ulong ullTotalVirtual;
+            public ulong ullAvailVirtual;
+            public ulong ullAvailExtendedVirtual;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
         static long GetTotalPhysicalMemory()
         {
-            try
-            {
-                using (var searcher = new ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem"))
-                {
-                    foreach (var obj in searcher.Get())
-                        return Convert.ToInt64(obj["TotalPhysicalMemory"]);
-                }
-            }
-            catch { }
+            var memStatus = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX)) };
+            if (GlobalMemoryStatusEx(ref memStatus))
+                return (long)memStatus.ullTotalPhys;
             return -1;
         }
 
